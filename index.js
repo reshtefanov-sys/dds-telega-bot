@@ -573,3 +573,90 @@ bot.launch().then(() => {
 bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}`, err);
 });
+
+// ============================================
+// ДИАГНОСТИКА ПРИ ЗАПУСКЕ
+// ============================================
+
+async function diagnoseSheets() {
+  try {
+    console.log('🔍 === ДИАГНОСТИКА GOOGLE SHEETS ===');
+    console.log('📊 SPREADSHEET_ID:', SPREADSHEET_ID);
+    
+    // Получить информацию о таблице
+    const spreadsheet = await sheets.spreadsheets.get({
+      spreadsheetId: SPREADSHEET_ID,
+    });
+    
+    console.log('✅ Доступ к таблице ЕСТЬ!');
+    console.log('📋 Название таблицы:', spreadsheet.data.properties.title);
+    console.log('\n📄 Список всех листов в таблице:');
+    
+    spreadsheet.data.sheets.forEach((sheet, index) => {
+      const title = sheet.properties.title;
+      console.log(`  ${index + 1}. "${title}"`);
+      
+      // Проверяем совпадения с конфигом
+      if (title === SHEETS_CONFIG.USERS) {
+        console.log('     ✅ Совпадает с USERS');
+      }
+      if (title === SHEETS_CONFIG.MAIN) {
+        console.log('     ✅ Совпадает с MAIN');
+      }
+      if (title === SHEETS_CONFIG.DIRECTIONS) {
+        console.log('     ✅ Совпадает с DIRECTIONS');
+      }
+      if (title === SHEETS_CONFIG.WALLETS) {
+        console.log('     ✅ Совпадает с WALLETS');
+      }
+      if (title === SHEETS_CONFIG.ARTICLES) {
+        console.log('     ✅ Совпадает с ARTICLES');
+      }
+    });
+    
+    console.log('\n🎯 Ожидаемые названия листов из конфига:');
+    console.log('  USERS:', SHEETS_CONFIG.USERS);
+    console.log('  MAIN:', SHEETS_CONFIG.MAIN);
+    console.log('  DIRECTIONS:', SHEETS_CONFIG.DIRECTIONS);
+    console.log('  WALLETS:', SHEETS_CONFIG.WALLETS);
+    console.log('  ARTICLES:', SHEETS_CONFIG.ARTICLES);
+    
+    console.log('\n=== КОНЕЦ ДИАГНОСТИКИ ===\n');
+    
+  } catch (error) {
+    console.error('❌ ОШИБКА ДИАГНОСТИКИ:', error.message);
+    if (error.code === 404) {
+      console.error('   Таблица не найдена или Service Account не имеет доступа');
+    }
+  }
+}
+
+// Запустить диагностику при старте
+diagnoseSheets().catch(console.error);
+```
+
+4. **Commit changes**
+
+---
+
+## 📋 Что это сделает:
+
+При запуске бота в логах Render вы увидите:
+- ✅ Есть ли доступ к таблице вообще
+- 📄 **Точные названия ВСЕХ листов** (как они есть на самом деле)
+- 🎯 Какие названия ожидает код
+- ✅ Какие листы совпадают
+
+---
+
+## 🚀 После commit:
+
+1. Render автоматически задеплоит новую версию (подождите 1-2 минуты)
+2. Откройте вкладку **"Logs"** на Render
+3. **Скопируйте и пришлите** мне всё, что написано между строками:
+```
+   🔍 === ДИАГНОСТИКА GOOGLE SHEETS ===
+```
+   и
+```
+   === КОНЕЦ ДИАГНОСТИКИ ===
