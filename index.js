@@ -630,9 +630,3 @@ async function diagnoseSheets() {
     }
   }
 }
-
-// Запустить диагностику при старте
-diagnoseSheets().catch(console.error);
-```
-
-
