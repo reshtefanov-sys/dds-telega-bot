@@ -113,26 +113,40 @@ async function addRecord(data, user) {
     const existingData = await getSheetData(SHEETS_CONFIG.MAIN, 'C:C');
     const targetRow = existingData.length + 1;
 
-    const values = [
+    // Записываем данные: C-I (без J и K), затем L-M
+    const valuesCI = [
       [
-        data.date,
-        data.amount,
-        data.wallet,
-        data.direction,
-        data.counterparty || '',
-        data.purpose || '',
-        data.article,
-        '', '',
-        user.fullName || user.username || 'Неизвестный',
-        user.id
+        data.date,                    // C
+        data.amount,                  // D
+        data.wallet,                  // E
+        data.direction,               // F
+        data.counterparty || '',      // G
+        data.purpose || '',           // H
+        data.article                  // I
       ]
     ];
-
+    
+    // Записываем C:I
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEETS_CONFIG.MAIN}!C${targetRow}:M${targetRow}`,
+      range: `${SHEETS_CONFIG.MAIN}!C${targetRow}:I${targetRow}`,
       valueInputOption: 'USER_ENTERED',
-      resource: { values },
+      resource: { values: valuesCI },
+    });
+
+    // Записываем L:M (пропускаем J и K)
+    const valuesLM = [
+      [
+        user.fullName || user.username || 'Неизвестный',  // L
+        user.id                                            // M
+      ]
+    ];
+    
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEETS_CONFIG.MAIN}!L${targetRow}:M${targetRow}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: valuesLM },
     });
 
     return targetRow;
