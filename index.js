@@ -14,9 +14,8 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: 'v4', auth });
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
-// Хранилище состояний пользователей (в продакшене лучше использовать Redis)
+// Хранилище состояний пользователей
 const userStates = new Map();
-const processedMessages = new Set();
 
 // Названия листов
 const SHEETS_CONFIG = {
@@ -44,7 +43,6 @@ const COLUMNS = {
 // ФУНКЦИИ РАБОТЫ С GOOGLE SHEETS
 // ============================================
 
-// Получить данные из листа
 async function getSheetData(sheetName, range) {
   try {
     const response = await sheets.spreadsheets.values.get({
@@ -53,12 +51,11 @@ async function getSheetData(sheetName, range) {
     });
     return response.data.values || [];
   } catch (error) {
-    console.error('Error reading sheet:', error);
+    console.error('Error reading sheet:', error.message);
     return [];
   }
 }
 
-// Получить пользователей
 async function getUsers() {
   const data = await getSheetData(SHEETS_CONFIG.USERS, 'A2:D');
   return data.map(row => ({
@@ -70,25 +67,21 @@ async function getUsers() {
   }));
 }
 
-// Проверить доступ пользователя
 async function checkUserAccess(userId) {
   const users = await getUsers();
   return users.find(u => u.id === userId);
 }
 
-// Получить направления
 async function getDirections() {
   const data = await getSheetData(SHEETS_CONFIG.DIRECTIONS, 'A2:A');
   return data.map(row => row[0]).filter(val => val);
 }
 
-// Получить кошельки
 async function getWallets() {
   const data = await getSheetData(SHEETS_CONFIG.WALLETS, 'A3:A');
   return data.map(row => row[0]).filter(val => val);
 }
 
-// Получить статьи по типу
 async function getArticles(type, excludeTransfers = false) {
   const data = await getSheetData(SHEETS_CONFIG.ARTICLES, 'A2:B');
   return data
@@ -101,14 +94,12 @@ async function getArticles(type, excludeTransfers = false) {
     .map(row => row[0]);
 }
 
-// Получить статью перевода
 async function getTransferArticle(type) {
   const articles = await getArticles(type, false);
   return articles.find(a => a.includes('Перевод между счетами')) || 
          `${type} — Перевод между счетами`;
 }
 
-// Конвертировать букву колонки в номер
 function columnToNumber(column) {
   let num = 0;
   for (let i = 0; i < column.length; i++) {
@@ -117,14 +108,11 @@ function columnToNumber(column) {
   return num;
 }
 
-// Добавить запись в таблицу
 async function addRecord(data, user) {
   try {
-    // Получить последнюю заполненную строку
     const existingData = await getSheetData(SHEETS_CONFIG.MAIN, 'C:C');
     const targetRow = existingData.length + 1;
 
-    // Подготовить данные для записи
     const values = [
       [
         data.date,
@@ -134,13 +122,12 @@ async function addRecord(data, user) {
         data.counterparty || '',
         data.purpose || '',
         data.article,
-        '', '', '', // Пустые колонки J, K, L (если есть)
+        '', '', '',
         user.fullName || user.username || 'Неизвестный',
         user.id
       ]
     ];
 
-    // Записать данные
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
       range: `${SHEETS_CONFIG.MAIN}!C${targetRow}:M${targetRow}`,
@@ -153,6 +140,27 @@ async function addRecord(data, user) {
     console.error('Error adding record:', error);
     throw error;
   }
+}
+
+// ============================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ============================================
+
+function getTodayDate() {
+  const today = new Date();
+  const day = String(today.getDate()).padStart(2, '0');
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const year = today.getFullYear();
+  return `${day}.${month}.${year}`;
+}
+
+function getYesterdayDate() {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const day = String(yesterday.getDate()).padStart(2, '0');
+  const month = String(yesterday.getMonth() + 1).padStart(2, '0');
+  const year = yesterday.getFullYear();
+  return `${day}.${month}.${year}`;
 }
 
 // ============================================
@@ -172,79 +180,48 @@ function getMainKeyboard(isAdmin = false) {
   return Markup.inlineKeyboard(buttons);
 }
 
+function getDateKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('📅 Сегодня', 'date_today'), Markup.button.callback('📅 Вчера', 'date_yesterday')],
+    [Markup.button.callback('📝 Другая дата', 'date_custom')],
+    [Markup.button.callback('❌ Отмена', 'cancel')]
+  ]);
+}
+
 function getCancelKeyboard() {
   return Markup.inlineKeyboard([[Markup.button.callback('❌ Отмена', 'cancel')]]);
 }
 
 function getListKeyboard(items, prefix = 'select') {
-  const buttons = items.map((item, index) => [
-    Markup.button.callback(item, `${prefix}_${index}`)
-  ]);
+  const buttons = [];
+  for (let i = 0; i < items.length; i++) {
+    buttons.push([Markup.button.callback(items[i], `${prefix}_${i}`)]);
+  }
   buttons.push([Markup.button.callback('❌ Отмена', 'cancel')]);
   return Markup.inlineKeyboard(buttons);
 }
 
 // ============================================
-// ОБРАБОТЧИКИ КОМАНД
+// КОМАНДА START
 // ============================================
 
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
-  
-  // ДИАГНОСТИКА
-  try {
-    console.log('\n=== ДИАГНОСТИКА НАЧАЛО ===');
-    console.log('SPREADSHEET_ID:', SPREADSHEET_ID);
-    
-    const spreadsheet = await sheets.spreadsheets.get({
-      spreadsheetId: SPREADSHEET_ID,
-    });
-    
-    console.log('Доступ к таблице: OK');
-    console.log('Название таблицы:', spreadsheet.data.properties.title);
-    console.log('\nВсе листы в таблице:');
-    
-    spreadsheet.data.sheets.forEach((sheet, index) => {
-      const title = sheet.properties.title;
-      console.log('  ' + (index + 1) + '. "' + title + '"');
-    });
-    
-    console.log('\nОжидаемые названия из конфига:');
-    console.log('  USERS:', SHEETS_CONFIG.USERS);
-    console.log('  MAIN:', SHEETS_CONFIG.MAIN);
-    console.log('  DIRECTIONS:', SHEETS_CONFIG.DIRECTIONS);
-    console.log('  WALLETS:', SHEETS_CONFIG.WALLETS);
-    console.log('  ARTICLES:', SHEETS_CONFIG.ARTICLES);
-    
-    console.log('\nПроверка совпадений:');
-    const userSheet = spreadsheet.data.sheets.find(s => s.properties.title === SHEETS_CONFIG.USERS);
-    if (userSheet) {
-      console.log('  USERS: НАЙДЕН');
-    } else {
-      console.log('  USERS: НЕ НАЙДЕН');
-      console.log('  Ищем: "' + SHEETS_CONFIG.USERS + '"');
-    }
-    
-    console.log('=== ДИАГНОСТИКА КОНЕЦ ===\n');
-    
-  } catch (diagError) {
-    console.error('ОШИБКА ДИАГНОСТИКИ:', diagError.message);
-  }
-  
   const user = await checkUserAccess(userId);
   
   if (!user) {
     return ctx.reply(
-      'У вас нет доступа к этому боту.\n\nВаш ID: ' + userId + '\n\nОбратитесь к администратору для получения доступа.'
+      `🚫 У вас нет доступа к этому боту.\n\nВаш ID: ${userId}\n\nОбратитесь к администратору для получения доступа.`
     );
   }
   
   userStates.delete(userId);
   
-  const greeting = 'Здравствуйте, ' + (user.fullName || user.username) + '!\n\nЭтот бот поможет вам вносить данные о финансовых операциях.\n\nВыберите тип операции:';
+  const greeting = `👋 Здравствуйте, ${user.fullName || user.username}!\n\nЭтот бот поможет вам вносить данные о финансовых операциях.\n\nВыберите тип операции:`;
   
   await ctx.reply(greeting, getMainKeyboard(user.isAdmin));
 });
+
 // ============================================
 // ОБРАБОТЧИКИ КНОПОК
 // ============================================
@@ -262,7 +239,7 @@ bot.action('income', async (ctx) => {
 bot.action('transfer', async (ctx) => {
   await ctx.answerCbQuery();
   const user = await checkUserAccess(ctx.from.id);
-  if (!user.isAdmin) {
+  if (!user?.isAdmin) {
     return ctx.reply('❌ Эта функция доступна только администраторам.');
   }
   await startTransfer(ctx);
@@ -274,6 +251,30 @@ bot.action('cancel', async (ctx) => {
   userStates.delete(userId);
   const user = await checkUserAccess(userId);
   await ctx.reply('❌ Операция отменена', getMainKeyboard(user?.isAdmin));
+});
+
+// Обработка выбора даты
+bot.action('date_today', async (ctx) => {
+  await ctx.answerCbQuery();
+  await processDate(ctx, getTodayDate());
+});
+
+bot.action('date_yesterday', async (ctx) => {
+  await ctx.answerCbQuery();
+  await processDate(ctx, getYesterdayDate());
+});
+
+bot.action('date_custom', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
+  
+  if (state) {
+    state.waitingCustomDate = true;
+    userStates.set(userId, state);
+  }
+  
+  await ctx.reply('Введите дату в формате ДД.ММ.ГГГГ\nНапример: 31.12.2025', getCancelKeyboard());
 });
 
 // Обработка выбора из списка
@@ -288,7 +289,7 @@ bot.action(/^select_(\d+)$/, async (ctx) => {
   }
   
   const selectedItem = state.currentList[index];
-  await handleTextInput(ctx, selectedItem);
+  await processSelection(ctx, selectedItem);
 });
 
 // ============================================
@@ -302,12 +303,14 @@ async function startOperation(ctx, type) {
   userStates.set(userId, {
     operation: type,
     state: 'waiting_date',
-    data: {}
+    data: {},
+    currentList: null,
+    waitingCustomDate: false
   });
   
   await ctx.reply(
-    `📅 <b>${operationName} - Шаг 1 из 6: Дата</b>\n\nВведите дату в формате ДД.ММ.ГГГГ\nНапример: 30.08.2025`,
-    { parse_mode: 'HTML', ...getCancelKeyboard() }
+    `📅 <b>${operationName} - Шаг 1 из 6: Дата</b>\n\nВыберите дату:`,
+    { parse_mode: 'HTML', ...getDateKeyboard() }
   );
 }
 
@@ -317,13 +320,65 @@ async function startTransfer(ctx) {
   userStates.set(userId, {
     operation: 'transfer',
     state: 'transfer_waiting_date',
-    data: {}
+    data: {},
+    currentList: null,
+    waitingCustomDate: false
   });
   
   await ctx.reply(
-    '📅 <b>Перевод - Шаг 1 из 5: Дата</b>\n\nВведите дату в формате ДД.ММ.ГГГГ\nНапример: 30.08.2025',
-    { parse_mode: 'HTML', ...getCancelKeyboard() }
+    '📅 <b>Перевод - Шаг 1 из 5: Дата</b>\n\nВыберите дату:',
+    { parse_mode: 'HTML', ...getDateKeyboard() }
   );
+}
+
+async function processDate(ctx, date) {
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
+  
+  if (!state) return;
+  
+  state.data.date = date;
+  state.waitingCustomDate = false;
+  
+  const operationName = state.operation === 'expense' ? 'Расход' : 
+                       state.operation === 'income' ? 'Поступление' : 'Перевод';
+  
+  if (state.operation === 'transfer') {
+    state.state = 'transfer_waiting_amount';
+    userStates.set(userId, state);
+    await ctx.reply(
+      `💰 <b>${operationName} - Шаг 2 из 5: Сумма</b>\n\nВведите сумму перевода:\nНапример: 50000`,
+      { parse_mode: 'HTML', ...getCancelKeyboard() }
+    );
+  } else {
+    state.state = 'waiting_amount';
+    userStates.set(userId, state);
+    await ctx.reply(
+      `💰 <b>${operationName} - Шаг 2 из 6: Сумма</b>\n\nВведите сумму (только число):\nНапример: 50000`,
+      { parse_mode: 'HTML', ...getCancelKeyboard() }
+    );
+  }
+}
+
+async function processSelection(ctx, selectedItem) {
+  const userId = ctx.from.id;
+  const user = await checkUserAccess(userId);
+  const state = userStates.get(userId);
+  
+  if (!state) return;
+  
+  const { operation, state: currentState, data } = state;
+  
+  try {
+    if (operation === 'transfer') {
+      await handleTransferSelection(ctx, selectedItem, currentState, data, user, state);
+    } else {
+      await handleRegularSelection(ctx, selectedItem, currentState, data, user, operation, state);
+    }
+  } catch (error) {
+    console.error('Error processing selection:', error);
+    await ctx.reply('❌ Произошла ошибка. Попробуйте снова.');
+  }
 }
 
 // ============================================
@@ -332,21 +387,8 @@ async function startTransfer(ctx) {
 
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
-  const messageId = ctx.message.message_id;
   const text = ctx.message.text;
   
-  // Защита от дублирования
-  const msgKey = `${userId}_${messageId}`;
-  if (processedMessages.has(msgKey)) return;
-  processedMessages.add(msgKey);
-  
-  // Очистка старых сообщений (храним только последние 100)
-  if (processedMessages.size > 100) {
-    const first = processedMessages.values().next().value;
-    processedMessages.delete(first);
-  }
-  
-  // Проверка доступа
   const user = await checkUserAccess(userId);
   if (!user) {
     return ctx.reply(`🚫 У вас нет доступа. Ваш ID: ${userId}`);
@@ -357,16 +399,20 @@ bot.on('text', async (ctx) => {
     return ctx.reply('Используйте /start для начала работы');
   }
   
-  await handleTextInput(ctx, text);
+  // Обработка кастомной даты
+  if (state.waitingCustomDate) {
+    if (!/^\d{2}\.\d{2}\.\d{4}$/.test(text)) {
+      return ctx.reply('❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ\nНапример: 30.08.2025');
+    }
+    await processDate(ctx, text);
+    return;
+  }
+  
+  await handleTextInput(ctx, text, user, state);
 });
 
-async function handleTextInput(ctx, text) {
+async function handleTextInput(ctx, text, user, state) {
   const userId = ctx.from.id;
-  const user = await checkUserAccess(userId);
-  const state = userStates.get(userId);
-  
-  if (!state) return;
-  
   const { operation, state: currentState, data } = state;
   
   try {
@@ -387,74 +433,37 @@ async function handleTextInput(ctx, text) {
 
 async function handleRegularOperationState(ctx, text, currentState, data, user, operation) {
   const userId = ctx.from.id;
+  const state = userStates.get(userId);
   const operationName = operation === 'expense' ? 'Расход' : 'Поступление';
   
   switch (currentState) {
-    case 'waiting_date':
-      if (!/^\d{2}\.\d{2}\.\d{4}$/.test(text)) {
-        return ctx.reply('❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ\nНапример: 30.08.2025');
-      }
-      data.date = text;
-      userStates.get(userId).state = 'waiting_amount';
-      userStates.get(userId).data = data;
-      await ctx.reply(
-        `💰 <b>${operationName} - Шаг 2 из 6: Сумма</b>\n\nВведите сумму (только число):\nНапример: 50000`,
-        { parse_mode: 'HTML', ...getCancelKeyboard() }
-      );
-      break;
-      
     case 'waiting_amount':
       const amount = text.replace(',', '.');
       if (!/^\d+(\.\d+)?$/.test(amount)) {
         return ctx.reply('❌ Неверный формат суммы. Введите положительное число.');
       }
       data.amount = operation === 'expense' ? '-' + amount : amount;
-      userStates.get(userId).state = 'waiting_wallet';
-      userStates.get(userId).data = data;
+      state.state = 'waiting_wallet';
+      state.data = data;
       
       const wallets = await getWallets();
       if (wallets.length === 0) {
         return ctx.reply('❌ Список кошельков пуст.');
       }
       
-      userStates.get(userId).currentList = wallets;
+      state.currentList = wallets;
+      userStates.set(userId, state);
       await ctx.reply(
         `👛 <b>${operationName} - Шаг 3 из 6: Кошелек</b>\n\nВыберите кошелек:`,
         { parse_mode: 'HTML', ...getListKeyboard(wallets) }
       );
       break;
       
-    case 'waiting_wallet':
-      data.wallet = text;
-      userStates.get(userId).state = 'waiting_direction';
-      userStates.get(userId).data = data;
-      
-      const directions = await getDirections();
-      if (directions.length === 0) {
-        return ctx.reply('❌ Список направлений пуст.');
-      }
-      
-      userStates.get(userId).currentList = directions;
-      await ctx.reply(
-        `🎯 <b>${operationName} - Шаг 4 из 6: Направление бизнеса</b>\n\nВыберите направление:`,
-        { parse_mode: 'HTML', ...getListKeyboard(directions) }
-      );
-      break;
-      
-    case 'waiting_direction':
-      data.direction = text;
-      userStates.get(userId).state = 'waiting_counterparty';
-      userStates.get(userId).data = data;
-      await ctx.reply(
-        `🤝 <b>${operationName} - Шаг 5 из 6: Контрагент</b>\n\nВведите название контрагента:`,
-        { parse_mode: 'HTML', ...getCancelKeyboard() }
-      );
-      break;
-      
     case 'waiting_counterparty':
       data.counterparty = text;
-      userStates.get(userId).state = 'waiting_purpose';
-      userStates.get(userId).data = data;
+      state.state = 'waiting_purpose';
+      state.data = data;
+      userStates.set(userId, state);
       await ctx.reply(
         `📝 <b>${operationName} - Шаг 6 из 6: Назначение платежа</b>\n\nВведите назначение платежа:`,
         { parse_mode: 'HTML', ...getCancelKeyboard() }
@@ -463,8 +472,8 @@ async function handleRegularOperationState(ctx, text, currentState, data, user, 
       
     case 'waiting_purpose':
       data.purpose = text;
-      userStates.get(userId).state = 'waiting_article';
-      userStates.get(userId).data = data;
+      state.state = 'waiting_article';
+      state.data = data;
       
       const articleType = operation === 'expense' ? 'Выбытие' : 'Поступление';
       const articles = await getArticles(articleType, true);
@@ -473,15 +482,53 @@ async function handleRegularOperationState(ctx, text, currentState, data, user, 
         return ctx.reply('❌ Список статей пуст.');
       }
       
-      userStates.get(userId).currentList = articles;
+      state.currentList = articles;
+      userStates.set(userId, state);
       await ctx.reply(
         `📊 <b>${operationName} - Выбор статьи</b>\n\nВыберите статью:`,
         { parse_mode: 'HTML', ...getListKeyboard(articles) }
       );
       break;
+  }
+}
+
+async function handleRegularSelection(ctx, selectedItem, currentState, data, user, operation, state) {
+  const userId = ctx.from.id;
+  const operationName = operation === 'expense' ? 'Расход' : 'Поступление';
+  
+  switch (currentState) {
+    case 'waiting_wallet':
+      data.wallet = selectedItem;
+      state.state = 'waiting_direction';
+      state.data = data;
+      
+      const directions = await getDirections();
+      if (directions.length === 0) {
+        return ctx.reply('❌ Список направлений пуст.');
+      }
+      
+      state.currentList = directions;
+      userStates.set(userId, state);
+      await ctx.reply(
+        `🎯 <b>${operationName} - Шаг 4 из 6: Направление бизнеса</b>\n\nВыберите направление:`,
+        { parse_mode: 'HTML', ...getListKeyboard(directions) }
+      );
+      break;
+      
+    case 'waiting_direction':
+      data.direction = selectedItem;
+      state.state = 'waiting_counterparty';
+      state.data = data;
+      state.currentList = null;
+      userStates.set(userId, state);
+      await ctx.reply(
+        `🤝 <b>${operationName} - Шаг 5 из 6: Контрагент</b>\n\nВведите название контрагента:`,
+        { parse_mode: 'HTML', ...getCancelKeyboard() }
+      );
+      break;
       
     case 'waiting_article':
-      data.article = text;
+      data.article = selectedItem;
       
       const rowNumber = await addRecord(data, user);
       
@@ -499,45 +546,41 @@ async function handleRegularOperationState(ctx, text, currentState, data, user, 
 
 async function handleTransferState(ctx, text, currentState, data, user) {
   const userId = ctx.from.id;
+  const state = userStates.get(userId);
   
   switch (currentState) {
-    case 'transfer_waiting_date':
-      if (!/^\d{2}\.\d{2}\.\d{4}$/.test(text)) {
-        return ctx.reply('❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ');
-      }
-      data.date = text;
-      userStates.get(userId).state = 'transfer_waiting_amount';
-      userStates.get(userId).data = data;
-      await ctx.reply(
-        '💰 <b>Перевод - Шаг 2 из 5: Сумма</b>\n\nВведите сумму перевода:\nНапример: 50000',
-        { parse_mode: 'HTML', ...getCancelKeyboard() }
-      );
-      break;
-      
     case 'transfer_waiting_amount':
       const amount = text.replace(',', '.');
       if (!/^\d+(\.\d+)?$/.test(amount)) {
         return ctx.reply('❌ Неверный формат суммы.');
       }
       data.amount = amount;
-      userStates.get(userId).state = 'transfer_waiting_direction';
-      userStates.get(userId).data = data;
+      state.state = 'transfer_waiting_direction';
+      state.data = data;
       
       const directions = await getDirections();
-      userStates.get(userId).currentList = directions;
+      state.currentList = directions;
+      userStates.set(userId, state);
       await ctx.reply(
         '🎯 <b>Перевод - Шаг 3 из 5: Направление бизнеса</b>\n\nВыберите направление:',
         { parse_mode: 'HTML', ...getListKeyboard(directions) }
       );
       break;
-      
+  }
+}
+
+async function handleTransferSelection(ctx, selectedItem, currentState, data, user, state) {
+  const userId = ctx.from.id;
+  
+  switch (currentState) {
     case 'transfer_waiting_direction':
-      data.direction = text;
-      userStates.get(userId).state = 'transfer_waiting_wallet_from';
-      userStates.get(userId).data = data;
+      data.direction = selectedItem;
+      state.state = 'transfer_waiting_wallet_from';
+      state.data = data;
       
       const walletsFrom = await getWallets();
-      userStates.get(userId).currentList = walletsFrom;
+      state.currentList = walletsFrom;
+      userStates.set(userId, state);
       await ctx.reply(
         '📤 <b>Перевод - Шаг 4 из 5: Кошелек выбытия</b>\n\nВыберите кошелек, С которого переводятся средства:',
         { parse_mode: 'HTML', ...getListKeyboard(walletsFrom) }
@@ -545,12 +588,13 @@ async function handleTransferState(ctx, text, currentState, data, user) {
       break;
       
     case 'transfer_waiting_wallet_from':
-      data.walletFrom = text;
-      userStates.get(userId).state = 'transfer_waiting_wallet_to';
-      userStates.get(userId).data = data;
+      data.walletFrom = selectedItem;
+      state.state = 'transfer_waiting_wallet_to';
+      state.data = data;
       
       const walletsTo = await getWallets();
-      userStates.get(userId).currentList = walletsTo;
+      state.currentList = walletsTo;
+      userStates.set(userId, state);
       await ctx.reply(
         '📥 <b>Перевод - Шаг 5 из 5: Кошелек поступления</b>\n\nВыберите кошелек, НА который переводятся средства:',
         { parse_mode: 'HTML', ...getListKeyboard(walletsTo) }
@@ -558,13 +602,12 @@ async function handleTransferState(ctx, text, currentState, data, user) {
       break;
       
     case 'transfer_waiting_wallet_to':
-      data.walletTo = text;
+      data.walletTo = selectedItem;
       
       if (data.walletFrom === data.walletTo) {
         return ctx.reply('❌ Кошельки не могут быть одинаковыми.');
       }
       
-      // Создать две записи
       const recordIn = {
         date: data.date,
         amount: data.amount,
@@ -599,7 +642,6 @@ async function handleTransferState(ctx, text, currentState, data, user) {
 // ЗАПУСК БОТА
 // ============================================
 
-// Graceful shutdown
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
@@ -609,64 +651,6 @@ bot.launch().then(() => {
   console.error('❌ Ошибка запуска:', error);
 });
 
-// Обработка ошибок
 bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}`, err);
 });
-
-// ============================================
-// ДИАГНОСТИКА ПРИ ЗАПУСКЕ
-// ============================================
-
-async function diagnoseSheets() {
-  try {
-    console.log('🔍 === ДИАГНОСТИКА GOOGLE SHEETS ===');
-    console.log('📊 SPREADSHEET_ID:', SPREADSHEET_ID);
-    
-    // Получить информацию о таблице
-    const spreadsheet = await sheets.spreadsheets.get({
-      spreadsheetId: SPREADSHEET_ID,
-    });
-    
-    console.log('✅ Доступ к таблице ЕСТЬ!');
-    console.log('📋 Название таблицы:', spreadsheet.data.properties.title);
-    console.log('\n📄 Список всех листов в таблице:');
-    
-    spreadsheet.data.sheets.forEach((sheet, index) => {
-      const title = sheet.properties.title;
-      console.log(`  ${index + 1}. "${title}"`);
-      
-      // Проверяем совпадения с конфигом
-      if (title === SHEETS_CONFIG.USERS) {
-        console.log('     ✅ Совпадает с USERS');
-      }
-      if (title === SHEETS_CONFIG.MAIN) {
-        console.log('     ✅ Совпадает с MAIN');
-      }
-      if (title === SHEETS_CONFIG.DIRECTIONS) {
-        console.log('     ✅ Совпадает с DIRECTIONS');
-      }
-      if (title === SHEETS_CONFIG.WALLETS) {
-        console.log('     ✅ Совпадает с WALLETS');
-      }
-      if (title === SHEETS_CONFIG.ARTICLES) {
-        console.log('     ✅ Совпадает с ARTICLES');
-      }
-    });
-    
-    console.log('\n🎯 Ожидаемые названия листов из конфига:');
-    console.log('  USERS:', SHEETS_CONFIG.USERS);
-    console.log('  MAIN:', SHEETS_CONFIG.MAIN);
-    console.log('  DIRECTIONS:', SHEETS_CONFIG.DIRECTIONS);
-    console.log('  WALLETS:', SHEETS_CONFIG.WALLETS);
-    console.log('  ARTICLES:', SHEETS_CONFIG.ARTICLES);
-    
-    console.log('\n=== КОНЕЦ ДИАГНОСТИКИ ===\n');
-    
-  } catch (error) {
-    console.error('❌ ОШИБКА ДИАГНОСТИКИ:', error.message);
-    if (error.code === 404) {
-      console.error('   Таблица не найдена или Service Account не имеет доступа');
-    }
-  }
-}
