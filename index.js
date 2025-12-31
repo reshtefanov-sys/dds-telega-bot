@@ -190,6 +190,53 @@ function getListKeyboard(items, prefix = 'select') {
 
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
+  
+  // ============================================
+  // ДИАГНОСТИКА - показываем все листы
+  // ============================================
+  try {
+    console.log('\n🔍 === ДИАГНОСТИКА (вызвана через /start) ===');
+    console.log('📊 SPREADSHEET_ID:', SPREADSHEET_ID);
+    
+    const spreadsheet = await sheets.spreadsheets.get({
+      spreadsheetId: SPREADSHEET_ID,
+    });
+    
+    console.log('✅ Доступ к таблице ЕСТЬ!');
+    console.log('📋 Название таблицы:', spreadsheet.data.properties.title);
+    console.log('\n📄 Все листы в таблице:');
+    
+    spreadsheet.data.sheets.forEach((sheet, index) => {
+      const title = sheet.properties.title;
+      console.log(`  ${index + 1}. "${title}"`);
+    });
+    
+    console.log('\n🎯 Ожидаемые названия из конфига:');
+    console.log('  USERS:', SHEETS_CONFIG.USERS);
+    console.log('  MAIN:', SHEETS_CONFIG.MAIN);
+    console.log('  DIRECTIONS:', SHEETS_CONFIG.DIRECTIONS);
+    console.log('  WALLETS:', SHEETS_CONFIG.WALLETS);
+    console.log('  ARTICLES:', SHEETS_CONFIG.ARTICLES);
+    
+    console.log('\n🔍 Проверка совпадений:');
+    const userSheet = spreadsheet.data.sheets.find(s => s.properties.title === SHEETS_CONFIG.USERS);
+    if (userSheet) {
+      console.log('  ✅ Лист USERS найден!');
+    } else {
+      console.log('  ❌ Лист USERS НЕ найден!');
+      console.log('  Ищем:', `"${SHEETS_CONFIG.USERS}"`);
+    }
+    
+    console.log('=== КОНЕЦ ДИАГНОСТИКИ ===\n');
+    
+  } catch (diagError) {
+    console.error('❌ Ошибка диагностики:', diagError.message);
+    if (diagError.code === 404) {
+      console.error('   Таблица не найдена или нет доступа к Service Account');
+    }
+  }
+  // ============================================
+  
   const user = await checkUserAccess(userId);
   
   if (!user) {
@@ -204,7 +251,23 @@ bot.start(async (ctx) => {
   
   await ctx.reply(greeting, getMainKeyboard(user.isAdmin));
 });
+```
 
+4. **Commit changes**
+
+---
+
+## 🚀 После commit:
+
+1. Дождитесь деплоя (1-2 минуты)
+2. Напишите боту `/start`
+3. **Сразу откройте Logs** и покажите мне всё между:
+```
+   🔍 === ДИАГНОСТИКА
+```
+   и
+```
+   === КОНЕЦ ДИАГНОСТИКИ ===
 // ============================================
 // ОБРАБОТЧИКИ КНОПОК
 // ============================================
