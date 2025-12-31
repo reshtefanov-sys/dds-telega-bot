@@ -122,7 +122,7 @@ async function addRecord(data, user) {
         data.counterparty || '',
         data.purpose || '',
         data.article,
-        '', '', '',
+        '', '',
         user.fullName || user.username || 'Неизвестный',
         user.id
       ]
