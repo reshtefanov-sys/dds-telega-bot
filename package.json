@@ -1,5 +1,5 @@
 {
-  "name": "dds-telegram-bot",
+  "name": "dds-telegra-bot",
   "version": "1.0.0",
   "description": "Telegram bot для учёта финансовых операций в Google Sheets",
   "main": "index.js",
