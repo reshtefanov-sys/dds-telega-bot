@@ -1,6 +1,8 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const { google } = require('googleapis');
+const https = require('https');
+const { Readable } = require('stream');
 
 // Инициализация бота
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -8,11 +10,16 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 // Настройка Google Sheets API
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  scopes: [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive.file'
+  ],
 });
 
 const sheets = google.sheets({ version: 'v4', auth });
+const drive = google.drive({ version: 'v3', auth });
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID;
 
 // Хранилище состояний пользователей
 const userStates = new Map();
@@ -36,7 +43,8 @@ const COLUMNS = {
   PURPOSE: 'H',
   ARTICLE: 'I',
   USER_NAME: 'L',
-  USER_ID: 'M'
+  USER_ID: 'M',
+  RECEIPT: 'N'
 };
 
 // ============================================
@@ -100,33 +108,85 @@ async function getTransferArticle(type) {
          `${type} — Перевод между счетами`;
 }
 
-function columnToNumber(column) {
-  let num = 0;
-  for (let i = 0; i < column.length; i++) {
-    num = num * 26 + (column.charCodeAt(i) - 64);
+// ============================================
+// ФУНКЦИИ РАБОТЫ С GOOGLE DRIVE
+// ============================================
+
+async function uploadReceiptToDrive(fileBuffer, fileName, description) {
+  try {
+    const fileMetadata = {
+      name: fileName,
+      parents: [DRIVE_FOLDER_ID],
+      description: description
+    };
+
+    const media = {
+      mimeType: 'image/jpeg',
+      body: Readable.from(fileBuffer)
+    };
+
+    const file = await drive.files.create({
+      resource: fileMetadata,
+      media: media,
+      fields: 'id, webViewLink'
+    });
+
+    // Делаем файл доступным по ссылке
+    await drive.permissions.create({
+      fileId: file.data.id,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone'
+      }
+    });
+
+    return file.data.webViewLink;
+  } catch (error) {
+    console.error('Error uploading to Drive:', error);
+    throw error;
   }
-  return num;
 }
 
-async function addRecord(data, user) {
+async function downloadTelegramFile(fileId) {
+  try {
+    const fileLink = await bot.telegram.getFileLink(fileId);
+    
+    return new Promise((resolve, reject) => {
+      https.get(fileLink.href, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => resolve(Buffer.concat(chunks)));
+        response.on('error', reject);
+      });
+    });
+  } catch (error) {
+    console.error('Error downloading file from Telegram:', error);
+    throw error;
+  }
+}
+
+// ============================================
+// ФУНКЦИИ ЗАПИСИ В ТАБЛИЦУ
+// ============================================
+
+async function addRecord(data, user, receiptLink = null) {
   try {
     const existingData = await getSheetData(SHEETS_CONFIG.MAIN, 'C:C');
     const targetRow = existingData.length + 1;
 
-    // Записываем данные: C-I (без J и K), затем L-M
+    // Записываем данные: C-I
     const valuesCI = [
       [
-        data.date,                    // C
-        data.amount,                  // D
-        data.wallet,                  // E
-        data.direction,               // F
-        data.counterparty || '',      // G
-        data.purpose || '',           // H
-        data.article                  // I
+        data.date,
+        data.amount,
+        data.wallet,
+        data.direction,
+        data.counterparty || '',
+        data.purpose || '',
+        data.article
       ]
     ];
     
-    // Записываем C:I
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
       range: `${SHEETS_CONFIG.MAIN}!C${targetRow}:I${targetRow}`,
@@ -134,11 +194,11 @@ async function addRecord(data, user) {
       resource: { values: valuesCI },
     });
 
-    // Записываем L:M (пропускаем J и K)
+    // Записываем L:M (ФИО и ID)
     const valuesLM = [
       [
-        user.fullName || user.username || 'Неизвестный',  // L
-        user.id                                            // M
+        user.fullName || user.username || 'Неизвестный',
+        user.id
       ]
     ];
     
@@ -148,6 +208,16 @@ async function addRecord(data, user) {
       valueInputOption: 'USER_ENTERED',
       resource: { values: valuesLM },
     });
+
+    // Записываем ссылку на чек в N, если есть
+    if (receiptLink) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${SHEETS_CONFIG.MAIN}!N${targetRow}`,
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [[receiptLink]] },
+      });
+    }
 
     return targetRow;
   } catch (error) {
@@ -204,6 +274,14 @@ function getDateKeyboard() {
 
 function getCancelKeyboard() {
   return Markup.inlineKeyboard([[Markup.button.callback('❌ Отмена', 'cancel')]]);
+}
+
+function getReceiptKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('📎 Прикрепить чек', 'attach_receipt')],
+    [Markup.button.callback('➡️ Пропустить', 'skip_receipt')],
+    [Markup.button.callback('❌ Отмена', 'cancel')]
+  ]);
 }
 
 function getListKeyboard(items, prefix = 'select') {
@@ -267,7 +345,6 @@ bot.action('cancel', async (ctx) => {
   await ctx.reply('❌ Операция отменена', getMainKeyboard(user?.isAdmin));
 });
 
-// Обработка выбора даты
 bot.action('date_today', async (ctx) => {
   await ctx.answerCbQuery();
   await processDate(ctx, getTodayDate());
@@ -291,7 +368,24 @@ bot.action('date_custom', async (ctx) => {
   await ctx.reply('Введите дату в формате ДД.ММ.ГГГГ\nНапример: 31.12.2025', getCancelKeyboard());
 });
 
-// Обработка выбора из списка
+bot.action('attach_receipt', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
+  
+  if (state) {
+    state.waitingReceipt = true;
+    userStates.set(userId, state);
+  }
+  
+  await ctx.reply('📸 Отправьте фото чека', getCancelKeyboard());
+});
+
+bot.action('skip_receipt', async (ctx) => {
+  await ctx.answerCbQuery();
+  await finalizeRecord(ctx, null);
+});
+
 bot.action(/^select_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const index = parseInt(ctx.match[1]);
@@ -307,6 +401,39 @@ bot.action(/^select_(\d+)$/, async (ctx) => {
 });
 
 // ============================================
+// ОБРАБОТКА ФОТО
+// ============================================
+
+bot.on('photo', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userStates.get(userId);
+  
+  if (!state || !state.waitingReceipt) {
+    return;
+  }
+  
+  try {
+    await ctx.reply('⏳ Загружаю чек на Google Drive...');
+    
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const fileBuffer = await downloadTelegramFile(photo.file_id);
+    
+    const fileName = `Чек_${state.data.date}_${state.data.counterparty || 'без_контрагента'}_${Date.now()}.jpg`;
+    const description = `Дата: ${state.data.date}, Сумма: ${state.data.amount}, Контрагент: ${state.data.counterparty}`;
+    
+    const driveLink = await uploadReceiptToDrive(fileBuffer, fileName, description);
+    
+    state.waitingReceipt = false;
+    userStates.set(userId, state);
+    
+    await finalizeRecord(ctx, driveLink);
+  } catch (error) {
+    console.error('Error processing photo:', error);
+    await ctx.reply('❌ Ошибка при загрузке чека. Попробуйте еще раз или пропустите.');
+  }
+});
+
+// ============================================
 // ЛОГИКА ОПЕРАЦИЙ
 // ============================================
 
@@ -319,7 +446,8 @@ async function startOperation(ctx, type) {
     state: 'waiting_date',
     data: {},
     currentList: null,
-    waitingCustomDate: false
+    waitingCustomDate: false,
+    waitingReceipt: false
   });
   
   await ctx.reply(
@@ -395,6 +523,32 @@ async function processSelection(ctx, selectedItem) {
   }
 }
 
+async function finalizeRecord(ctx, receiptLink) {
+  const userId = ctx.from.id;
+  const user = await checkUserAccess(userId);
+  const state = userStates.get(userId);
+  
+  if (!state) return;
+  
+  try {
+    const rowNumber = await addRecord(state.data, user, receiptLink);
+    
+    let summary = `✅ <b>Запись успешно добавлена!</b>\n\n📅 Дата: ${state.data.date}\n💰 Сумма: ${state.data.amount}\n👛 Кошелек: ${state.data.wallet}\n🎯 Направление: ${state.data.direction}\n🤝 Контрагент: ${state.data.counterparty}\n📝 Назначение: ${state.data.purpose}\n📊 Статья: ${state.data.article}`;
+    
+    if (receiptLink) {
+      summary += `\n📎 Чек: <a href="${receiptLink}">Открыть</a>`;
+    }
+    
+    summary += `\n\nСтрока: ${rowNumber}`;
+    
+    await ctx.reply(summary, { parse_mode: 'HTML', ...getMainKeyboard(user.isAdmin) });
+    userStates.delete(userId);
+  } catch (error) {
+    console.error('Error finalizing record:', error);
+    await ctx.reply('❌ Ошибка при сохранении записи: ' + error.message);
+  }
+}
+
 // ============================================
 // ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ
 // ============================================
@@ -413,7 +567,6 @@ bot.on('text', async (ctx) => {
     return ctx.reply('Используйте /start для начала работы');
   }
   
-  // Обработка кастомной даты
   if (state.waitingCustomDate) {
     if (!/^\d{2}\.\d{2}\.\d{4}$/.test(text)) {
       return ctx.reply('❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ\nНапример: 30.08.2025');
@@ -543,13 +696,15 @@ async function handleRegularSelection(ctx, selectedItem, currentState, data, use
       
     case 'waiting_article':
       data.article = selectedItem;
+      state.data = data;
+      state.currentList = null;
+      userStates.set(userId, state);
       
-      const rowNumber = await addRecord(data, user);
-      
-      const summary = `✅ <b>Запись успешно добавлена!</b>\n\n📅 Дата: ${data.date}\n💰 Сумма: ${data.amount}\n👛 Кошелек: ${data.wallet}\n🎯 Направление: ${data.direction}\n🤝 Контрагент: ${data.counterparty}\n📝 Назначение: ${data.purpose}\n📊 Статья: ${data.article}\n\nСтрока: ${rowNumber}`;
-      
-      await ctx.reply(summary, { parse_mode: 'HTML', ...getMainKeyboard(user.isAdmin) });
-      userStates.delete(userId);
+      // Предлагаем прикрепить чек
+      await ctx.reply(
+        `📎 <b>Хотите прикрепить чек?</b>\n\nВы можете загрузить фото чека, и оно будет сохранено на Google Drive со ссылкой в таблице.`,
+        { parse_mode: 'HTML', ...getReceiptKeyboard() }
+      );
       break;
   }
 }
@@ -631,8 +786,8 @@ async function handleTransferSelection(ctx, selectedItem, currentState, data, us
         purpose: 'Перевод между счетами',
         article: await getTransferArticle('Поступление')
       };
-      const rowIn = await addRecord(recordIn, user);
-      
+      const rowIn = await addRecor
+      // Продолжение функции handleTransferSelection
       const recordOut = {
         date: data.date,
         amount: '-' + data.amount,
