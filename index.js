@@ -3,13 +3,15 @@ const { Telegraf, Markup } = require('telegraf');
 const { google } = require('googleapis');
 const https = require('https');
 const { Readable } = require('stream');
+const fs = require('fs');
 
 // Инициализация бота
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Настройка Google Sheets API
+const credentials = process.env.GOOGLE_CREDENTIALS.startsWith('{') ? JSON.parse(process.env.GOOGLE_CREDENTIALS) : JSON.parse(fs.readFileSync(process.env.GOOGLE_CREDENTIALS, 'utf8'));
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+  credentials: credentials,
   scopes: [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive.file'
@@ -751,7 +753,7 @@ async function handleTransferSelection(ctx, selectedItem, currentState, data, us
       state.currentList = walletsFrom;
       userStates.set(userId, state);
       await ctx.reply(
-        '📤 <b>Перевод - Шаг 4 из 5: Кошелек выбытия</b>\n\nВыберите кошелек, С которого переводятся средства:',
+        '📤 <b>Перевод - Шаг 4 из 5: Кошелек выбытия</b>\n\nВыберите кошелек, ИЗ которого переводятся средства:',
         { parse_mode: 'HTML', ...getListKeyboard(walletsFrom) }
       );
       break;
@@ -765,7 +767,7 @@ async function handleTransferSelection(ctx, selectedItem, currentState, data, us
       state.currentList = walletsTo;
       userStates.set(userId, state);
       await ctx.reply(
-        '📥 <b>Перевод - Шаг 5 из 5: Кошелек поступления</b>\n\nВыберите кошелек, НА который переводятся средства:',
+        '📥 <b>Перевод - Шаг 5 из 5: Кошелек поступления</b>\n\nВыберите кошелек, В который переводятся средства:',
         { parse_mode: 'HTML', ...getListKeyboard(walletsTo) }
       );
       break;
@@ -786,7 +788,7 @@ async function handleTransferSelection(ctx, selectedItem, currentState, data, us
         purpose: 'Перевод между счетами',
         article: await getTransferArticle('Поступление')
       };
-      const rowIn = await addRecor
+      const rowIn = await addRecord(recordIn, user);
       // Продолжение функции handleTransferSelection
       const recordOut = {
         date: data.date,
