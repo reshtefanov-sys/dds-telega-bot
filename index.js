@@ -338,6 +338,7 @@ bot.action('transfer', async (ctx) => {
   }
   await startTransfer(ctx);
 });
+
 // Показать остатки на счетах
 bot.action('balances', async (ctx) => {
   try {
@@ -351,43 +352,48 @@ bot.action('balances', async (ctx) => {
 
     await ctx.answerCbQuery();
     
-    // Получаем все операции (сумма в D, кошелек в E)
-    const data = await getSheetData(SHEETS_CONFIG.MAIN, 'D:E');
+    // Получаем данные с листа "ДДС: месяц" (строки 1-3, колонки A-I)
+    const data = await getSheetData(SHEETS_CONFIG.MAIN, 'A1:I3');
     
-    // Получаем список кошельков
-    const walletsData = await getSheetData(SHEETS_CONFIG.WALLETS, 'A:A');
-    const wallets = walletsData.slice(1).map(row => row[0]).filter(w => w);
-    
-    // Подсчитываем остатки
-    const balances = {};
-    wallets.forEach(wallet => {
-      balances[wallet] = 0;
-    });
-    
-    // Суммируем операции по каждому кошельку (пропускаем заголовок)
-    data.slice(1).forEach(row => {
-      if (row[1]) { // Если есть кошелек (колонка E)
-        const wallet = row[1];
-        const amountStr = String(row[0] || '0').replace(',', '.');
-        const amount = parseFloat(amountStr) || 0;
-        if (balances.hasOwnProperty(wallet)) {
-          balances[wallet] += amount;
-        }
-      }
-    });
+    if (!data || data.length < 3) {
+      await ctx.reply('❌ Не удалось получить данные о счетах', getMainKeyboard(user.isAdmin));
+      return;
+    }
     
     // Формируем сообщение
     let message = '💰 <b>Остатки на счетах:</b>\n\n';
-    let total = 0;
     
-    for (const wallet in balances) {
-      const balance = balances[wallet];
-      total += balance;
-      const formatted = balance.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      message += `💼 ${wallet}: <b>${formatted} ₽</b>\n`;
+    // Пары колонок: название (B=1, D=3, F=5, H=7) и сумма (C=2, E=4, G=6, I=8)
+    const columnPairs = [
+      { name: 1, amount: 2 },  // B, C
+      { name: 3, amount: 4 },  // D, E
+      { name: 5, amount: 6 },  // F, G
+      { name: 7, amount: 8 }   // H, I
+    ];
+    
+    // Проходим по всем строкам (0, 1, 2) и колонкам
+    for (let row = 0; row < 3; row++) {
+      columnPairs.forEach(pair => {
+        const walletName = data[row][pair.name];
+        const balanceValue = data[row][pair.amount];
+        
+        if (walletName && balanceValue) {
+          const balanceStr = String(balanceValue).replace(',', '.');
+          const balance = parseFloat(balanceStr) || 0;
+          const formatted = balance.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          message += `💼 ${walletName}: <b>${formatted} ₽</b>\n`;
+        }
+      });
     }
     
-    message += `\n━━━━━━━━━━━━━━━━\n📊 <b>Итого: ${total.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽</b>`;
+    // Берем итого из A3
+    const totalValue = data[2][0]; // Строка 3, колонка A (индексы с 0)
+    if (totalValue) {
+      const totalStr = String(totalValue).replace(',', '.');
+      const total = parseFloat(totalStr) || 0;
+      const formatted = total.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      message += `\n━━━━━━━━━━━━━━━━\n📊 <b>Итого: ${formatted} ₽</b>`;
+    }
     
     await ctx.reply(message, { parse_mode: 'HTML', ...getMainKeyboard(user.isAdmin) });
     
