@@ -386,10 +386,10 @@ bot.action('balances', async (ctx) => {
       });
     }
     
-    // Берем итого из A3
+// Берем итого из A3
     const totalValue = data[2][0]; // Строка 3, колонка A (индексы с 0)
     if (totalValue) {
-      const totalStr = String(totalValue).replace(',', '.');
+      const totalStr = String(totalValue).replace(',', '.').replace(/\s/g, '');
       const total = parseFloat(totalStr) || 0;
       const formatted = total.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       message += `\n━━━━━━━━━━━━━━━━\n📊 <b>Итого: ${formatted} ₽</b>`;
