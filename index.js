@@ -257,7 +257,7 @@ function getMainKeyboard(isAdmin = false) {
   const buttons = isAdmin
     ? [
         [Markup.button.callback('📤 Расход', 'expense'), Markup.button.callback('📥 Поступление', 'income')],
-        [Markup.button.callback('🔄 Перевод', 'transfer')]
+        [Markup.button.callback('🔄 Перевод', 'transfer'), Markup.button.callback('💰 Денег на счетах', 'balances')]
       ]
     : [
         [Markup.button.callback('📤 Расход', 'expense'), Markup.button.callback('📥 Поступление', 'income')]
@@ -337,6 +337,64 @@ bot.action('transfer', async (ctx) => {
     return ctx.reply('❌ Эта функция доступна только администраторам.');
   }
   await startTransfer(ctx);
+});
+// Показать остатки на счетах
+bot.action('balances', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const user = await checkUserAccess(userId);
+    
+    if (!user) {
+      await ctx.answerCbQuery('❌ У вас нет доступа');
+      return;
+    }
+
+    await ctx.answerCbQuery();
+    
+    // Получаем все операции (сумма в D, кошелек в E)
+    const data = await getSheetData(SHEETS_CONFIG.MAIN, 'D:E');
+    
+    // Получаем список кошельков
+    const walletsData = await getSheetData(SHEETS_CONFIG.WALLETS, 'A:A');
+    const wallets = walletsData.slice(1).map(row => row[0]).filter(w => w);
+    
+    // Подсчитываем остатки
+    const balances = {};
+    wallets.forEach(wallet => {
+      balances[wallet] = 0;
+    });
+    
+    // Суммируем операции по каждому кошельку (пропускаем заголовок)
+    data.slice(1).forEach(row => {
+      if (row[1]) { // Если есть кошелек (колонка E)
+        const wallet = row[1];
+        const amountStr = String(row[0] || '0').replace(',', '.');
+        const amount = parseFloat(amountStr) || 0;
+        if (balances.hasOwnProperty(wallet)) {
+          balances[wallet] += amount;
+        }
+      }
+    });
+    
+    // Формируем сообщение
+    let message = '💰 <b>Остатки на счетах:</b>\n\n';
+    let total = 0;
+    
+    for (const wallet in balances) {
+      const balance = balances[wallet];
+      total += balance;
+      const formatted = balance.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      message += `💼 ${wallet}: <b>${formatted} ₽</b>\n`;
+    }
+    
+    message += `\n━━━━━━━━━━━━━━━━\n📊 <b>Итого: ${total.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽</b>`;
+    
+    await ctx.reply(message, { parse_mode: 'HTML', ...getMainKeyboard(user.isAdmin) });
+    
+  } catch (error) {
+    console.error('Error showing balances:', error);
+    await ctx.reply('❌ Ошибка при получении остатков', getMainKeyboard(false));
+  }
 });
 
 bot.action('cancel', async (ctx) => {
