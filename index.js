@@ -593,7 +593,6 @@ async function finalizeRecord(ctx, receiptLink) {
   const userId = ctx.from.id;
   const user = await checkUserAccess(userId);
   const state = userStates.get(userId);
-  
   if (!state) return;
   
   try {
@@ -607,6 +606,55 @@ async function finalizeRecord(ctx, receiptLink) {
     
     summary += `\n\nСтрока: ${rowNumber}`;
     
+    // Проверка на автоматические переводы для поступлений на Т-Банк
+    if (state.operation === 'income' && state.data.wallet === 'Счет Т-банк') {
+      await ctx.reply(summary, { parse_mode: 'HTML' });
+      await ctx.reply(
+        '🔄 <b>Автоматические переводы</b>\n\nСделать переводы:\n• 10% на маркетинг\n• 7% на налоги\n• 1% на стратсессию?',
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('✅ Да', 'auto_transfer_yes'),
+              Markup.button.callback('❌ Нет', 'auto_transfer_no')
+            ]
+          ])
+        }
+      );
+      
+      userStates.set(userId, {
+        stage: 'awaiting_auto_transfer',
+        incomeAmount: parseFloat(String(state.data.amount).replace(',', '.')),
+        incomeDate: state.data.date,
+        direction: state.data.direction
+      });
+      return;
+    }
+    
+    // Проверка на платежное поручение для расходов с Т-Банк
+    if (state.operation === 'expense' && state.data.wallet === 'Счет Т-банк') {
+      await ctx.reply(summary, { parse_mode: 'HTML' });
+      await ctx.reply(
+        '📄 <b>Платежное поручение</b>\n\nСоздать расход на платежное поручение?',
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('✅ Да', 'payment_order_yes'),
+              Markup.button.callback('❌ Нет', 'payment_order_no')
+            ]
+          ])
+        }
+      );
+      
+      userStates.set(userId, {
+        stage: 'awaiting_payment_order',
+        expenseDate: state.data.date,
+        direction: state.data.direction
+      });
+      return;
+    }
+    
     await ctx.reply(summary, { parse_mode: 'HTML', ...getMainKeyboard(user.isAdmin) });
     userStates.delete(userId);
   } catch (error) {
@@ -619,6 +667,95 @@ async function finalizeRecord(ctx, receiptLink) {
 // ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ
 // ============================================
 
+// ============================================
+// ОБРАБОТЧИКИ АВТОПЕРЕВОДОВ
+// ============================================
+
+bot.action('auto_transfer_yes', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const state = userStates.get(userId);
+    const user = await checkUserAccess(userId);
+    
+    if (!state || state.stage !== 'awaiting_auto_transfer') {
+      await ctx.answerCbQuery('❌ Ошибка состояния');
+      return;
+    }
+    
+    await ctx.answerCbQuery();
+    
+    const amount = state.incomeAmount;
+    const date = state.incomeDate;
+    const direction = state.direction;
+    
+    const transfers = [
+      { percent: 10, account: 'На маркетинг', amount: amount * 0.10 },
+      { percent: 7, account: 'На налоги', amount: amount * 0.07 },
+      { percent: 1, account: 'На страт сессию', amount: amount * 0.01 }
+    ];
+    
+    let message = '✅ <b>Автопереводы выполнены:</b>\n\n';
+    
+    for (const transfer of transfers) {
+      const recordOut = {
+        date: date,
+        amount: String('-' + transfer.amount.toFixed(2)).replace('.', ','),
+        wallet: 'Счет Т-банк',
+        direction: direction,
+        counterparty: transfer.account,
+        purpose: 'Перевод между счетами',
+        article: 'Выбытие — Перевод между счетами'
+      };
+      const rowOut = await addRecord(recordOut, user);
+      
+      const recordIn = {
+        date: date,
+        amount: String(transfer.amount.toFixed(2)).replace('.', ','),
+        wallet: transfer.account,
+        direction: direction,
+        counterparty: 'Счет Т-банк',
+        purpose: 'Перевод между счетами',
+        article: 'Поступление — Перевод между счетами'
+      };
+      const rowIn = await addRecord(recordIn, user);
+      
+      message += `💼 ${transfer.percent}% → ${transfer.account}: <b>${transfer.amount.toFixed(2)} ₽</b> (строки ${rowOut}, ${rowIn})\n`;
+    }
+    
+    await ctx.reply(message, { parse_mode: 'HTML', ...getMainKeyboard(user.isAdmin) });
+    userStates.delete(userId);
+    
+  } catch (error) {
+    console.error('Error in auto transfer:', error);
+    await ctx.reply('❌ Ошибка при создании переводов', getMainKeyboard(false));
+  }
+});
+
+bot.action('auto_transfer_no', async (ctx) => {
+  const userId = ctx.from.id;
+  const user = await checkUserAccess(userId);
+  await ctx.answerCbQuery();
+  await ctx.reply('✅ Операция завершена', { ...getMainKeyboard(user.isAdmin) });
+  userStates.delete(userId);
+});
+
+bot.action('payment_order_yes', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.answerCbQuery();
+  await ctx.reply('💰 Введите сумму платежного поручения:', { parse_mode: 'HTML' });
+  
+  const state = userStates.get(userId);
+  state.stage = 'awaiting_payment_order_amount';
+  userStates.set(userId, state);
+});
+
+bot.action('payment_order_no', async (ctx) => {
+  const userId = ctx.from.id;
+  const user = await checkUserAccess(userId);
+  await ctx.answerCbQuery();
+  await ctx.reply('✅ Операция завершена', { ...getMainKeyboard(user.isAdmin) });
+  userStates.delete(userId);
+});
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text;
@@ -647,6 +784,33 @@ bot.on('text', async (ctx) => {
 async function handleTextInput(ctx, text, user, state) {
   const userId = ctx.from.id;
   const { operation, state: currentState, data } = state;
+  // Обработка платежного поручения
+  if (state.stage === 'awaiting_payment_order_amount') {
+    const poAmount = text.trim().replace(',', '.');
+    if (!/^-?\d+(\.\d+)?$/.test(poAmount)) {
+      await ctx.reply('❌ Неверный формат суммы. Введите число:', { parse_mode: 'HTML' });
+      return;
+    }
+    
+    const poRecord = {
+      date: state.expenseDate,
+      amount: String('-' + poAmount).replace('.', ','),
+      wallet: 'Счет Т-банк',
+      direction: state.direction,
+      counterparty: 'АО ТБанк',
+      purpose: 'Платежное поручение',
+      article: 'РКО'
+    };
+    
+    const poRow = await addRecord(poRecord, user);
+    
+    const poSummary = `✅ <b>Платежное поручение создано!</b>\n\n📅 Дата: ${state.expenseDate}\n💰 Сумма: -${poAmount} ₽\n💼 Кошелек: Счет Т-банк\n👤 Контрагент: АО ТБанк\n📝 Назначение: Платежное поручение\n📊 Статья: РКО\n\nСтрока: ${poRow}`;
+    
+    await ctx.reply(poSummary, { parse_mode: 'HTML', ...getMainKeyboard(user.isAdmin) });
+    userStates.delete(userId);
+    return;
+  }
+
   
   try {
     if (operation === 'transfer') {
